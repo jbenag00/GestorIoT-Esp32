@@ -8,6 +8,7 @@
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h> 
 #include <DHT.h>
+#include "ESP32_MailClient.h"
 
 
 /***************************************
@@ -47,6 +48,13 @@ const int FAN_PIN = 33; // Gobierna el ventilador
 unsigned long lastTrigger = 0;
 boolean startTimer = false;
 bool mov=false;
+
+/***************************************
+************* CONFIG SMTP **************
+****************************************/
+SMTPData datosSMTP;
+bool alarma=false;
+bool mensaje=false;
 
 
 /***************************************
@@ -99,6 +107,7 @@ bool topic_obteined = false;  //comprobación de tópico
 char msg[25]; //Caracteres del mensaje
 
 //Botones del panel(modo auto, switch1, switch2, switch3, barra de refresco y tiempo de refresco)
+byte autoAlarm = 0;
 byte autoPanel = 0;
 byte sw1 = 0;
 byte sw2 = 0;
@@ -124,6 +133,7 @@ void callbackMQTT(char* topic, byte* payload, unsigned int length);
 void connectMQTT();
 bool get_topic(int length);
 void send_to_database();
+void send_to_gmail(bool alarma, bool mensaje);
 
 
 
@@ -141,7 +151,7 @@ void setup() {
   
   while(!topic_obteined){
     topic_obteined = get_topic(expected_topic_length);
-    delay(3000);
+    delay(1000);
   }
 
   setupMQTT();
@@ -174,7 +184,13 @@ void loop() {
   if(mqttclient.connected()){
     temp = getTemperatura();
     hum = getHumedad();
-
+    if(alarma){
+      if (mov){
+        mensaje=true;
+        send_to_gmail(alarma,mensaje);
+        mensaje=false;
+      }
+    }
     if(autoPanel==1){
       lastTemp=temp;
       lastHum=hum;
@@ -276,7 +292,7 @@ void loop() {
     Serial.println("");
     publishTemperatura();
     publishHumedad();
-    String to_send = String(lastTemp) + "," + String(lastHum) + "," + String(sw1)+","+ String(sw2)+","+String(sw3)+","+String(autoPanel);
+    String to_send = String(lastTemp) + "," + String(lastHum) + "," + String(sw1)+","+ String(sw2)+","+String(sw3)+","+String(autoPanel)+","+String(autoAlarm);
     to_send.toCharArray(msg,20);
     mqttclient.publish(device_topic_publish,msg);
     
@@ -337,7 +353,6 @@ float getTemperatura(){
     temperaturaString+=" C";
     Serial.println(temperaturaString);
   }
-  delay(1000);
   return t;
 }
 
@@ -360,7 +375,6 @@ float getHumedad(){
     humedadString +=" %";
     Serial.println(humedadString);
   }
-  delay(1000);
   return h;
 }
 
@@ -404,6 +418,9 @@ void IRAM_ATTR detectsMovement() {
   startTimer = true;
   lastTrigger = millis();
   mov=true;
+  if(alarma){
+    mensaje=true;
+  }
 }
 
 //función para obtener el tópico perteneciente a este dispositivo
@@ -501,8 +518,6 @@ void send_to_database(){
         break;
       }
     }
-
-
     String line;
     while(client2.available()){
       line += client2.readStringUntil('\n');
@@ -512,6 +527,53 @@ void send_to_database(){
 
   }
 
+}
+
+void send_to_gmail(bool alarma, bool mensaje){
+  Serial.println("\n\nIniciando sesión en Gmail...");
+  datosSMTP.setLogin("smtp.gmail.com", 465, "jbenagtfg@gmail.com", "javier00tfg");
+  Serial.println("Escribiendo mensaje...");
+  // Establecer el nombre del remitente y el correo electrónico
+  datosSMTP.setSender("GestorIoT", "jbenagtfg@gmail.com");
+  if(mensaje==false && alarma==true){
+    // Establezca la prioridad o importancia del correo electrónico High, Normal, Low o 1 a 5 (1 es el más alto)
+    datosSMTP.setPriority("Normal");
+    // Establecer el asunto
+    datosSMTP.setSubject("Información sobre la alarma");
+    // Establece el mensaje de correo electrónico en formato de texto (sin formato)
+    datosSMTP.setMessage("Alarma activada", false);
+    // Agregar destinatarios, se puede agregar más de un destinatario
+    datosSMTP.addRecipient("jbenagtfg@gmail.com");
+  }else if(mensaje==false && alarma==false){
+    // Establezca la prioridad o importancia del correo electrónico High, Normal, Low o 1 a 5 (1 es el más alto)
+    datosSMTP.setPriority("Normal");
+    // Establecer el asunto
+    datosSMTP.setSubject("Información sobre la alarma");
+    // Establece el mensaje de correo electrónico en formato de texto (sin formato)
+    datosSMTP.setMessage("Alarma desactivada", false);
+    // Agregar destinatarios, se puede agregar más de un destinatario
+    datosSMTP.addRecipient("jbenagtfg@gmail.com");
+  }else if(mensaje==true && alarma==true){
+    // Establezca la prioridad o importancia del correo electrónico High, Normal, Low o 1 a 5 (1 es el más alto)
+    datosSMTP.setPriority("High");
+    // Establecer el asunto
+    datosSMTP.setSubject("¡¡¡ALARMA!!!");
+    // Establece el mensaje de correo electrónico en formato de texto (sin formato)
+    datosSMTP.setMessage("La alarma ha detectado un intruso!!", false);
+    // Agregar destinatarios, se puede agregar más de un destinatario
+    datosSMTP.addRecipient("jbenagtfg@gmail.com");
+  }
+
+  //Comience a enviar correo electrónico.
+  if (!MailClient.sendMail(datosSMTP)){
+    Serial.println("Error enviando el correo, " + MailClient.smtpErrorReason());
+    delay(1000);
+    send_to_gmail(alarma,mensaje);
+  }
+  Serial.println("Mensaje enviado con éxito!!");
+
+  //Borrar todos los datos del objeto datosSMTP para liberar memoria
+  datosSMTP.empty();
 }
 
 void setupMQTT(){
@@ -538,9 +600,24 @@ void callbackMQTT(char* topic, byte* payload, unsigned int length) {
   String str_topic = String(topic);
   String command = s.separa(str_topic,'/',3);
 
+  if(command=="ala"){
+    Serial.println("Alarma pasa manualmente a estado " + incoming);
+    autoAlarm = incoming.toInt();
+    Serial.print("Alarma: ");
+    if(autoAlarm == int(1)){
+      Serial.println("ACTIVADO.");
+      alarma=true;
+      send_to_gmail(alarma,mensaje);
+    }else if(autoAlarm ==int(0)){
+      Serial.println("DESACTIVADO.");
+      alarma=false;
+      send_to_gmail(alarma,mensaje);
+    }
+  }
+
   if(command=="aut"){
     Serial.println("AutoPanel pasa manualmente a estado " + incoming);
-    autoPanel = incoming.toInt();
+    autoPanel = incoming.toInt(); 
     Serial.print("Modo automatico: ");
     if(autoPanel == int(1)){
       Serial.println("ACTIVADO.");
@@ -548,6 +625,7 @@ void callbackMQTT(char* topic, byte* payload, unsigned int length) {
       Serial.println("DESACTIVADO.");
     }
   }
+
   if(command=="sw1"){
     if(autoPanel==1){
       Serial.println("Modo automatico: DESACTIVADO.");
