@@ -65,7 +65,7 @@ bool mensaje=false;
 const String serial_number = "001";
 const String insert_password = "javier00";
 const String get_data_password = "javier00";
-const char*  server = "gestoriot.000webhostapp.com";
+const char*  server = "gestoriot.com";
 
 
 
